@@ -1,84 +1,132 @@
+import tensorflow as tf
 import pandas as pd
+import numpy as np
+from random import shuffle
+from matplotlib import pyplot as plt
 
-lufttempData = pd.read_json(path_or_buf="weatherData/lufttemp.json", orient='records')
-lufttryckData = pd.read_json(path_or_buf="weatherData/lufttryck.json", orient='records')
-relluftfuktData = pd.read_json(path_or_buf="weatherData/relluftfukt.json", orient='records')
-siktData = pd.read_json(path_or_buf="weatherData/sikt.json", orient='records')
-weatherData = pd.read_json(path_or_buf="weatherData/weather.json", orient='records')
-weatherCodesData = pd.read_json(path_or_buf="weatherData/weather_codes.json", orient='records')
-vindhastData = pd.read_json(path_or_buf="weatherData/vindhast.json", orient='records')
-vindriktData = pd.read_json(path_or_buf="weatherData/vindrikt.json", orient='records')
+np.set_printoptions(precision=3)
 
-lufttempData.rename({'value':'airTemp'})
+# Read csv data into pandas dataframe
+df = pd.read_csv("weatherData/weatherTable.csv")
 
-# print(len(lufttempData), lufttempData.head(3))
-# print(len(lufttryckData), lufttryckData.head(3))
-# print(len(relluftfuktData), relluftfuktData.head(3))
-# print(len(siktData), siktData.head(3))
-# print(len(weatherData), weatherData.head(3))
-# #print(weatherCodesData.head(3))
-# print(len(vindhastData), vindhastData.head(3))
-# print(len(vindriktData), vindriktData.head(3))
+# Convert dataframe into numpy array
+data = np.array(df.values)
 
-data = pd.DataFrame()#columns=['date', 'airTemp', 'airPressure', 'relAirHumidity', 'sightDistance', 'weather', 'windSpeed', 'windDirection'])
+# Extract real columns
+realData = data[:, [2, 3, 4, 5, 7, 8]]
 
-date_new = relluftfuktData.loc[0:1952].date
+numberOfColumns = realData.shape[1]
+learningRate = 0.01
+numberOfEpochs = 50000
 
-airTemp_new = pd.Series([])
-airPressure_new = pd.Series([])
-relAirHumidity_new = pd.Series([])
-sightDistance_new = pd.Series([])
-weather_new = pd.Series([])
-windSpeed_new = pd.Series([])
-windDirection_new = pd.Series([])
+# How much data should be used for training
+trainingSetRatio = 0.8
 
-data.insert(0, 'date', date_new)
-# print(len(relluftfuktData), len(data))
-#print(relluftfuktData[2944][:])
-for i in range(len(data)):
-    if data['date'][i] == lufttempData['date'][i]:
-        airTemp_new[i] = lufttempData['value'][i]
+# How many samples in sequence
+sampleSequence = 5
 
-    if data['date'][i] == lufttryckData['date'][i]:
-        airPressure_new[i] = lufttryckData['value'][i]
+# How many samples away from end of sample sequence should we predict. 0 is next prediction of next sample
+predictionTime = 0
 
-    if data['date'][i] == relluftfuktData['date'][i]:
-        relAirHumidity_new[i] = relluftfuktData['value'][i]
+trainingData = np.empty(shape=(0, sampleSequence*numberOfColumns))
+validationData = np.empty(shape=(0, sampleSequence*numberOfColumns))
+trainingTarget = np.empty(shape=(0, numberOfColumns))
+validationTarget= np.empty(shape=(0, numberOfColumns))
 
-    if data['date'][i] == siktData['date'][i]:
-        sightDistance_new[i] = siktData['value'][i]
+# Create a randomly shuffled selection of data
+availableShuffledIndices = [*range(realData.shape[0] - sampleSequence - predictionTime)]
+shuffle(availableShuffledIndices)
 
-    if data['date'][i] == weatherData['date'][i]:
-        weather_new[i] = weatherData['value'][i]
+# Split data into training and validation data sets
+for i in range(len(availableShuffledIndices)):
 
-    if data['date'][i] == vindhastData['date'][i]:
-        windSpeed_new[i] = vindhastData['value'][i]
+    currentIndex = availableShuffledIndices[i]
 
-    if data['date'][i] == vindriktData['date'][i]:
-        windDirection_new[i] = vindriktData['value'][i]
+    # Extract sample
+    s = [x + currentIndex for x in range(sampleSequence)]
+    st = currentIndex + sampleSequence + predictionTime
+    sample = np.expand_dims(np.reshape(realData[s, :], (sampleSequence*numberOfColumns)), 0)
+    sampleTarget = np.expand_dims(realData[st, :], 0)
 
-data.insert(1, 'airTemp', airTemp_new)
-data.insert(2, 'airPressure', airPressure_new)
-data.insert(3, 'relAirHumidity', relAirHumidity_new)
-data.insert(4, 'sightDistance', sightDistance_new)
-data.insert(5, 'weather', weather_new)
-data.insert(6, 'windSpeed', windSpeed_new)
-data.insert(7, 'windDirection', windDirection_new)
+    # Create training data set
+    if i < len(availableShuffledIndices) * trainingSetRatio:
+        trainingData = np.append(trainingData, sample, 0)
+        trainingTarget = np.append(trainingTarget, sampleTarget, 0)
 
-with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-    #print(weatherCodesData.head(3))
-    print(data.groupby('weather').mean().merge(weatherCodesData, how='left', left_on='weather', right_on='key'))
-    pass
+    # Create validation data set
+    else:
+        validationData = np.append(validationData, sample, 0)
+        validationTarget = np.append(validationTarget, sampleTarget, 0)
 
-weatherOneHot = pd.get_dummies(data=data.weather, prefix='weather')
+# Create calculation tree
+input = tf.placeholder(dtype=tf.float32, shape=(None, trainingData.shape[1]), name="input")
+target = tf.placeholder(dtype=tf.float32, shape=(None, trainingTarget.shape[1]), name="target")
 
-#print(weatherOneHot)
-#print(data)
+normInput = tf.nn.batch_normalization(x=input, mean=0, variance=1, offset=0, scale=1, variance_epsilon=1e-7)
+normTarget = tf.nn.batch_normalization(x=target, mean=0, variance=1, offset=0, scale=1, variance_epsilon=1e-7)
 
-data = data.merge(weatherOneHot, how='left', left_index=True, right_index=True)
+layer1 = tf.layers.dense(inputs=normInput,
+                         units=trainingData.shape[1]*8,
+                         activation=None,
+                         kernel_initializer=tf.initializers.random_normal,
+                         bias_initializer=tf.initializers.random_normal,
+                         name="layer1")
 
-with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-    #print(data.head())
-    pass
+layer1Activation = tf.nn.leaky_relu(features=layer1, alpha=0.1)
 
-data.to_csv("weatherData/weatherTable.csv")
+layer2 = tf.layers.dense(inputs=layer1Activation,
+                         units=trainingData.shape[1]*4,
+                         activation=None,
+                         kernel_initializer=tf.initializers.random_normal,
+                         bias_initializer=tf.initializers.random_normal,
+                         name="layer2")
+
+layer2Activation = tf.nn.leaky_relu(features=layer2, alpha=0.1)
+#layer2Activation = tf.nn.sigmoid(layer2)
+
+layer3 = tf.layers.dense(inputs=layer2Activation,
+                         units=trainingTarget.shape[1],
+                         activation=None,
+                         kernel_initializer=tf.initializers.random_normal,
+                         bias_initializer=tf.initializers.random_normal,
+                         name="layer3")
+
+# Remove batch dimension if size 0
+prediction = tf.squeeze(layer3, name="squeeze")
+
+loss = tf.reduce_mean(tf.squared_difference(prediction, target, name="loss"))
+
+optimizer = tf.train.AdamOptimizer(learning_rate=learningRate)
+
+train_op = optimizer.minimize(loss)
+
+trainingLossLog = []
+validationLossLog = []
+
+fig1 = plt.figure(figsize=(10, 5))
+
+with tf.Session() as sess:
+    sess.run(tf.global_variables_initializer())
+    print(trainingData.shape)
+    for i in range(numberOfEpochs):
+        _, trainingLoss = sess.run([train_op, loss],
+                                   feed_dict={input : trainingData[:,:(numberOfColumns*sampleSequence)],
+                                              target : trainingData[:,-(numberOfColumns):]})
+        pred, validationLoss = sess.run([prediction, loss], feed_dict={input : validationData[:,:(numberOfColumns*(sampleSequence))],
+                                              target : validationData[:,-(numberOfColumns):]})
+
+        print("\rPrediction: {} Target {} Training loss: {:.2f} Validation loss: {:.2f}".format(pred[0,:], validationData[0,-(numberOfColumns):], trainingLoss, validationLoss), end="")
+
+        trainingLossLog.append(np.log(trainingLoss))
+        validationLossLog.append(np.log(validationLoss))
+
+        if i % 1000 == 0:
+            plt.plot(trainingLossLog, 'r')
+            plt.plot(validationLossLog, 'b')
+            plt.xlabel("Episode")
+            plt.ylabel("Loss")
+            plt.title("Training and validiation log loss")
+            plt.pause(0.05)
+
+plt.show()
+
